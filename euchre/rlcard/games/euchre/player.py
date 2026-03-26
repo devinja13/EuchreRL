@@ -4,5 +4,8 @@ class EuchrePlayer(object):
         self.player_id = player_id
         self.hand = []
 
+    def get_player_hand(self):
+        return self.hand
+    
     def get_player_id(self):
         return self.player_id
