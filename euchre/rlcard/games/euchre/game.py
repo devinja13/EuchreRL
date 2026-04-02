@@ -192,19 +192,6 @@ class EuchreGame(object):
     def is_over(self):
         return self.game_over
     
-    def get_global_state(self):
-        global_state = []
-        for player in self.players:
-            global_state.extend(player.get_player_hand())
-        global_state.extend(self.trump)
-        global_state.extend(self.seen)
-        global_state.extend(self.center)
-        global_state.extend(self.order)
-        score_vector = [self.score[i] for i in range(4)]
-        global_state.extend(score_vector)
-        global_state.extend(5 - len(self.players[0].hand))
-        return global_state
-
     @staticmethod
     def get_action_num():
         return 54

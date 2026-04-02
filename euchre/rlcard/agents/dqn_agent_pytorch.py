@@ -36,6 +36,58 @@ from rlcard.utils.utils import remove_illegal
 
 Transition = namedtuple('Transition', ['state', 'action', 'reward', 'next_state', 'done'])
 
+JointTransition = namedtuple('JointTransition', [
+    'obs1', 'obs2',                          # per-agent local observations (48-dim each)
+    'action1', 'action2',                    # actions taken by agents 0 and 2
+    'next_obs1', 'next_obs2',               # next local observations
+    'reward',                                # shared team reward
+    'global_state', 'next_global_state'     # global state for mixer (127-dim each)
+])
+
+
+class JointMemory(object):
+    '''Joint replay buffer for QMIX, storing paired transitions for
+    teammate agents (players 0 and 2) indexed by (episode, trick).
+
+    Tuple layout: <obs1, obs2, a1, a2, next_obs1, next_obs2, r, s, s'>
+    '''
+
+    def __init__(self, memory_size, batch_size):
+        self.memory_size = memory_size
+        self.batch_size = batch_size
+        self.memory = []
+
+    def save(self, obs1, obs2, action1, action2,
+             next_obs1, next_obs2, reward,
+             global_state, next_global_state):
+        if len(self.memory) == self.memory_size:
+            self.memory.pop(0)
+        self.memory.append(JointTransition(
+            obs1, obs2, action1, action2,
+            next_obs1, next_obs2, reward,
+            global_state, next_global_state
+        ))
+
+    def sample(self):
+        '''Sample a minibatch of joint transitions.
+
+        Returns nine arrays: obs1, obs2, action1, action2,
+        next_obs1, next_obs2, reward, global_state, next_global_state.
+        '''
+        import random
+        samples = random.sample(self.memory, self.batch_size)
+        (obs1, obs2, a1, a2,
+         next_obs1, next_obs2,
+         reward, gs, next_gs) = zip(*samples)
+        return (np.array(obs1), np.array(obs2),
+                np.array(a1), np.array(a2),
+                np.array(next_obs1), np.array(next_obs2),
+                np.array(reward, dtype=np.float32),
+                np.array(gs), np.array(next_gs))
+
+    def __len__(self):
+        return len(self.memory)
+
 
 class DQNAgent(object):
     '''

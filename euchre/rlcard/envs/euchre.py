@@ -57,3 +57,25 @@ class EuchreEnv(Env):
 
     def get_payoffs(self):
         return self.game.get_payoffs()
+
+    def get_global_state(self):
+        deck = [k for k, v in sorted(ACTION_SPACE.items(),
+                key=lambda x: x[1]) if 6 <= ACTION_SPACE[k] <= 29]
+        # 4 binary hand vectors (96 dims)
+        hands = []
+        for p in self.game.players:
+            held = {c.get_index() for c in p.hand}
+            hands.append(np.array([1.0 if c in held else 0.0 for c in deck]))
+        # trump one-hot (4 dims)
+        suit_map = {'C': 0, 'D': 1, 'H': 2, 'S': 3}
+        trump_oh = np.zeros(4)
+        if self.game.trump is not None:
+            trump_oh[suit_map[self.game.trump]] = 1.0
+        # seen (24 dims)
+        # team scores (2 dims)
+        s = self.game.score
+        scores = np.array([s[0] + s[2], s[1] + s[3]], dtype=float)
+        # trick number (1 dim)
+        trick_num = np.array([5 - len(self.game.players[0].hand)], dtype=float)
+        return np.concatenate(hands + [trump_oh, self.game.seen, scores, trick_num])
+        # total: 96 + 4 + 24 + 2 + 1 = 127 dims
