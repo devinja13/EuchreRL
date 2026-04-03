@@ -31,8 +31,25 @@ import torch.nn as nn
 from collections import namedtuple
 from copy import deepcopy
 
-from rlcard.agents.dqn_agent import Memory
 from rlcard.utils.utils import remove_illegal
+
+class Memory(object):
+    ''' Memory for saving transitions '''
+
+    def __init__(self, memory_size, batch_size):
+        self.memory_size = memory_size
+        self.batch_size = batch_size
+        self.memory = []
+
+    def save(self, state, action, reward, next_state, done):
+        if len(self.memory) == self.memory_size:
+            self.memory.pop(0)
+        self.memory.append(Transition(state, action, reward, next_state, done))
+
+    def sample(self):
+        import random
+        samples = random.sample(self.memory, self.batch_size)
+        return map(np.array, zip(*samples))
 
 Transition = namedtuple('Transition', ['state', 'action', 'reward', 'next_state', 'done'])
 
