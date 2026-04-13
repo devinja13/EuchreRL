@@ -6,6 +6,9 @@ Sequential-turn handling follows Option 1 from the Phase 2 spec:
   - both agents' transitions within that trick share the same s_t / s_t'
 """
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import numpy as np
 import torch
 import torch.nn.functional as F

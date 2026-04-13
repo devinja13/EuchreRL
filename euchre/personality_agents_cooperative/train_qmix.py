@@ -18,6 +18,9 @@ Reward structure:
   • Personality shaping added on top (see compute_shaping).
 """
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -35,7 +38,7 @@ ACTION_NUM   = 54
 GLOBAL_DIM   = 127    # from EuchreEnv.get_global_state()
 MIX_EMBED    = 64     # mixing network hidden size
 
-EPISODES          = 4000
+EPISODES          = 20000
 BATCH_SIZE        = 32
 MEMORY_SIZE       = 15000
 WARMUP_EPISODES   = 300    # collect transitions before any training
@@ -135,13 +138,32 @@ class QMIXSystem:
         self.agent2.target_estimator = deepcopy(self.agent2.q_estimator)
         self.target_mixer = deepcopy(self.mixer)
 
+    def save(self, path: str):
+        """Save all trained weights to a single file."""
+        torch.save({
+            'agent0_qnet': self.agent0.q_estimator.qnet.state_dict(),
+            'agent2_qnet': self.agent2.q_estimator.qnet.state_dict(),
+            'mixer': self.mixer.state_dict(),
+        }, path)
+        print(f"QMIX model saved to {path}")
+
+    def load(self, path: str):
+        """Load trained weights from a saved checkpoint."""
+        ckpt = torch.load(path, map_location=self.device)
+        self.agent0.q_estimator.qnet.load_state_dict(ckpt['agent0_qnet'])
+        self.agent2.q_estimator.qnet.load_state_dict(ckpt['agent2_qnet'])
+        self.mixer.load_state_dict(ckpt['mixer'])
+        self.sync_targets()
+        print(f"QMIX model loaded from {path}")
+
     # ── training step ─────────────────────────────────────────────────────────
 
     def train(self, joint_memory: JointMemory) -> float:
         """One QMIX gradient step. Returns scalar loss."""
         (obs1, obs2, a1, a2,
          next_obs1, next_obs2,
-         reward, gs, next_gs) = joint_memory.sample()
+         reward, gs, next_gs,
+         nl1, nl2, done) = joint_memory.sample()
 
         obs1      = self._t(obs1)
         obs2      = self._t(obs2)
@@ -152,6 +174,9 @@ class QMIXSystem:
         reward    = self._t(reward)          # (B,)
         gs        = self._t(gs)
         next_gs   = self._t(next_gs)
+        nl1       = self._t(nl1)             # (B, 54) legal action masks
+        nl2       = self._t(nl2)
+        done      = self._t(done)            # (B,)  1.0 if terminal
 
         # ── current Q_tot ─────────────────────────────────────────────────────
         self.agent0.q_estimator.qnet.train()
@@ -172,9 +197,13 @@ class QMIXSystem:
             self.agent2.target_estimator.qnet.eval()
             self.target_mixer.eval()
 
-            # Use online net to pick best next actions, target net to evaluate
-            best_a0 = self.agent0.q_estimator.qnet(next_obs1).argmax(dim=1)  # (B,)
-            best_a2 = self.agent2.q_estimator.qnet(next_obs2).argmax(dim=1)
+            # Use online net to pick best *legal* next actions, target net to evaluate
+            q0_online = self.agent0.q_estimator.qnet(next_obs1)
+            q2_online = self.agent2.q_estimator.qnet(next_obs2)
+            q0_online[nl1 == 0] = -1e9   # mask illegal actions
+            q2_online[nl2 == 0] = -1e9
+            best_a0 = q0_online.argmax(dim=1)  # (B,)
+            best_a2 = q2_online.argmax(dim=1)
 
             q0_next = self.agent0.target_estimator.qnet(next_obs1)
             q2_next = self.agent2.target_estimator.qnet(next_obs2)
@@ -183,7 +212,9 @@ class QMIXSystem:
 
             q_next_vals = torch.stack([max_q0, max_q2], dim=1)
             q_tot_next  = self.target_mixer(q_next_vals, next_gs)             # (B,1)
-            target      = reward.unsqueeze(1) + self.gamma * q_tot_next       # (B,1)
+            # Zero out bootstrap for terminal transitions (done=1)
+            not_done    = (1.0 - done).unsqueeze(1)                           # (B,1)
+            target      = reward.unsqueeze(1) + self.gamma * q_tot_next * not_done  # (B,1)
 
         # ── gradient step ─────────────────────────────────────────────────────
         loss = F.mse_loss(q_tot, target)
@@ -268,7 +299,14 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
     prev_gs         = env.get_global_state()
     prev_team_tricks = 0   # tricks won by team 0&2 so far
 
-    def flush(trick_reward: float):
+    def _legal_mask(state_dict):
+        """Build a binary mask of shape (ACTION_NUM,) from a state's legal actions."""
+        mask = np.zeros(ACTION_NUM, dtype=np.float32)
+        for a in state_dict['legal_actions']:
+            mask[a] = 1.0
+        return mask
+
+    def flush(trick_reward: float, done: bool = False):
         nonlocal prev_gs
         if 0 not in buf or 2 not in buf:
             return
@@ -277,14 +315,20 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
         obs0, a0, sh0 = buf[0]
         obs2, a2, sh2 = buf[2]
 
-        # next local observations for each agent
-        next_obs0 = env._extract_state(game.get_state(0))['obs']
-        next_obs2 = env._extract_state(game.get_state(2))['obs']
+        # next local observations and legal masks for each agent
+        next_state0 = env._extract_state(game.get_state(0))
+        next_state2 = env._extract_state(game.get_state(2))
+        next_obs0 = next_state0['obs']
+        next_obs2 = next_state2['obs']
+        # Terminal states have no legal actions — use all-ones (won't matter since done=True)
+        next_legal0 = _legal_mask(next_state0) if not done else np.ones(ACTION_NUM, dtype=np.float32)
+        next_legal2 = _legal_mask(next_state2) if not done else np.ones(ACTION_NUM, dtype=np.float32)
 
         r = trick_reward + sh0 + sh2
         joint_memory.save(obs0, obs2, a0, a2,
                           next_obs0, next_obs2,
-                          r, prev_gs, next_gs)
+                          r, prev_gs, next_gs,
+                          next_legal0, next_legal2, done)
         buf.clear()
         prev_gs = next_gs
 
@@ -320,7 +364,7 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
         # ── flush joint transition ────────────────────────────────────────────
         if hand_ended:
             payoffs = game.get_payoffs()
-            flush(payoffs.get(0, 0))
+            flush(payoffs.get(0, 0), done=True)
         elif trick_ended:
             new_tricks  = game.score[0] + game.score[2]
             trick_r     = (new_tricks - prev_team_tricks) * 0.25
@@ -449,6 +493,8 @@ if __name__ == '__main__':
     print("=" * 60)
     win_rate, avg_payoff = evaluate(env, qmix, opp_agents, n_games=1000)
     print(f"Final (1000 games):  win={win_rate*100:.1f}%  avg_payoff={avg_payoff:+.3f}")
+
+    qmix.save(os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt'))
 
     # ── personality summary ────────────────────────────────────────────────────
     # Run 200 greedy games and tally personality metrics

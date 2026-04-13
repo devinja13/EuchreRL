@@ -58,7 +58,9 @@ JointTransition = namedtuple('JointTransition', [
     'action1', 'action2',                    # actions taken by agents 0 and 2
     'next_obs1', 'next_obs2',               # next local observations
     'reward',                                # shared team reward
-    'global_state', 'next_global_state'     # global state for mixer (127-dim each)
+    'global_state', 'next_global_state',    # global state for mixer (127-dim each)
+    'next_legal1', 'next_legal2',           # legal action masks for next states (action_num-dim)
+    'done',                                  # whether the episode ended (terminal transition)
 ])
 
 
@@ -76,13 +78,17 @@ class JointMemory(object):
 
     def save(self, obs1, obs2, action1, action2,
              next_obs1, next_obs2, reward,
-             global_state, next_global_state):
+             global_state, next_global_state,
+             next_legal1=None, next_legal2=None,
+             done=False):
         if len(self.memory) == self.memory_size:
             self.memory.pop(0)
         self.memory.append(JointTransition(
             obs1, obs2, action1, action2,
             next_obs1, next_obs2, reward,
-            global_state, next_global_state
+            global_state, next_global_state,
+            next_legal1, next_legal2,
+            done
         ))
 
     def sample(self):
@@ -95,12 +101,16 @@ class JointMemory(object):
         samples = random.sample(self.memory, self.batch_size)
         (obs1, obs2, a1, a2,
          next_obs1, next_obs2,
-         reward, gs, next_gs) = zip(*samples)
+         reward, gs, next_gs,
+         nl1, nl2, done) = zip(*samples)
         return (np.array(obs1), np.array(obs2),
                 np.array(a1), np.array(a2),
                 np.array(next_obs1), np.array(next_obs2),
                 np.array(reward, dtype=np.float32),
-                np.array(gs), np.array(next_gs))
+                np.array(gs), np.array(next_gs),
+                np.array(nl1, dtype=np.float32),
+                np.array(nl2, dtype=np.float32),
+                np.array(done, dtype=np.float32))
 
     def __len__(self):
         return len(self.memory)

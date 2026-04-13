@@ -1,15 +1,22 @@
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import rlcard
 from rlcard.agents.dqn_agent_pytorch import DQNAgent
 from rlcard.agents.euchre_rule_agent import EuchreRuleAgent
+from train_qmix import QMIXSystem
 
 env = rlcard.make('euchre', config={'num_players': 4})
 
 # Players 0 & 2 are on the same team; players 1 & 3 are on the same team.
-# DQN agents (team 0&2) vs Rule-based agents (team 1&3).
-dqn0 = DQNAgent(scope='dqn0', action_num=54, state_shape=[48], mlp_layers=[64, 64])
-dqn1 = DQNAgent(scope='dqn1', action_num=54, state_shape=[48], mlp_layers=[64, 64])
+# QMIX-trained agents (team 0&2) vs Rule-based agents (team 1&3).
+agent0 = DQNAgent(scope='aggressive', action_num=54, state_shape=[48], mlp_layers=[128, 128])
+agent2 = DQNAgent(scope='timid', action_num=54, state_shape=[48], mlp_layers=[128, 128])
 
-agents = [dqn0, EuchreRuleAgent(), dqn1, EuchreRuleAgent()]
+qmix = QMIXSystem(agent0, agent2)
+qmix.load(os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt'))
+
+agents = [agent0, EuchreRuleAgent(), agent2, EuchreRuleAgent()]
 env.set_agents(agents)
 
 num_games = 10
