@@ -1,10 +1,7 @@
 """
 QMIX cooperative training for Euchre.
 
-Team 0&2 (QMIX):
-  Player 0 – Aggressive: reward-shaped to call trump and lead trump early.
-  Player 2 – Timid:      reward-shaped to follow suit and avoid calling trump.
-
+Team 0&2 (QMIX): two rule-based agents trained cooperatively.
 Team 1&3: fixed EuchreRuleAgents (opponents).
 
 The QMIX mixing network takes the per-agent chosen Q-values and the global
@@ -15,7 +12,6 @@ improves Q_tot, which allows decentralized greedy execution.
 Reward structure:
   • Tricks 1-4: +0.25 per trick won by the team (intermediate shaping).
   • Trick 5 / hand end: final game payoff (+1 normal win, +2 march, -1 loss, -2 euchred).
-  • Personality shaping added on top (see compute_shaping).
 """
 
 import sys, os
@@ -38,21 +34,21 @@ ACTION_NUM   = 54
 GLOBAL_DIM   = 127    # from EuchreEnv.get_global_state()
 MIX_EMBED    = 64     # mixing network hidden size
 
-EPISODES          = 20000
+EPISODES          = 80_000
 BATCH_SIZE        = 32
-MEMORY_SIZE       = 15000
-WARMUP_EPISODES   = 300    # collect transitions before any training
-TRAIN_EVERY       = 1      # train after every episode (once warmed up)
-TARGET_SYNC_EVERY = 300    # episodes between hard target network copies
-EVAL_EVERY        = 400    # episodes between evaluation checkpoints
-EVAL_GAMES        = 150
+MEMORY_SIZE       = 50_000    # fills after ~10k episodes
+WARMUP_EPISODES   = 1_000     # ~1% of episodes before any gradients
+TRAIN_EVERY       = 1
+TARGET_SYNC_EVERY = 2_000
+EVAL_EVERY        = 20_000    # 4 checkpoints total
+EVAL_GAMES        = 100
 
 GAMMA        = 0.99
 LR           = 5e-4
 EPSILON_START = 1.0
-EPSILON_END   = 0.08
-# epsilon decays over the first half of training
-EPSILON_STEPS = EPISODES * 3   # agent.total_t incremented each team decision
+EPSILON_END   = 0.05
+# Decay over all 80k episodes (~10 decisions/ep × 80k = 800k total_t steps)
+EPSILON_STEPS = 800_000
 
 
 # ── Mixing Network ─────────────────────────────────────────────────────────────
@@ -237,45 +233,6 @@ class QMIXSystem:
         return loss.item()
 
 
-# ── Personality Shaping ────────────────────────────────────────────────────────
-
-def compute_shaping(player_id: int, raw_action: str,
-                    trump, lead_suit, center_len: int) -> float:
-    """
-    Intrinsic reward nudging each agent toward its personality.
-
-    Player 0 – Aggressive
-      • +0.15  calls or picks up trump
-      • +0.08  leads with a trump card (first to act in a trick)
-
-    Player 2 – Timid
-      • -0.10  calls or picks up trump (discouraged from being the caller)
-      • +0.06  follows a non-trump lead suit (does not ruff in)
-    """
-    is_card = (
-        raw_action not in ('pick', 'pass')
-        and not raw_action.startswith('call-')
-        and not raw_action.startswith('discard-')
-    )
-
-    if player_id == 0:  # Aggressive
-        if raw_action == 'pick' or raw_action.startswith('call-'):
-            return 0.15
-        if is_card and trump and center_len == 0 and raw_action[0] == trump:
-            return 0.08   # leading trump
-        return 0.0
-
-    else:  # player_id == 2 – Timid
-        if raw_action == 'pick' or raw_action.startswith('call-'):
-            return -0.10
-        if (is_card and trump and lead_suit
-                and lead_suit != trump
-                and center_len > 0
-                and raw_action[0] == lead_suit):
-            return 0.06   # followed the non-trump lead
-        return 0.0
-
-
 # ── Episode Runner ─────────────────────────────────────────────────────────────
 
 def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
@@ -287,14 +244,14 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
       • After each completed trick (reward = score delta × 0.25).
       • At hand end (reward = final game payoff ±1 or ±2).
       • After both agents have acted during the bidding phase
-        (reward = personality shaping only, no trick reward yet).
+        (reward = 0, no trick reward yet).
 
     Returns the final game payoff for the QMIX team (player 0's payoff).
     """
     game = env.game
     state, player_id = env.reset()
 
-    # buf[p] = (obs_vec, action_id, shaping) for team player p
+    # buf[p] = (obs_vec, action_id) for team player p
     buf: dict = {}
     prev_gs         = env.get_global_state()
     prev_team_tricks = 0   # tricks won by team 0&2 so far
@@ -312,8 +269,8 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
             return
 
         next_gs   = env.get_global_state()
-        obs0, a0, sh0 = buf[0]
-        obs2, a2, sh2 = buf[2]
+        obs0, a0 = buf[0]
+        obs2, a2 = buf[2]
 
         # next local observations and legal masks for each agent
         next_state0 = env._extract_state(game.get_state(0))
@@ -324,10 +281,9 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
         next_legal0 = _legal_mask(next_state0) if not done else np.ones(ACTION_NUM, dtype=np.float32)
         next_legal2 = _legal_mask(next_state2) if not done else np.ones(ACTION_NUM, dtype=np.float32)
 
-        r = trick_reward + sh0 + sh2
         joint_memory.save(obs0, obs2, a0, a2,
                           next_obs0, next_obs2,
-                          r, prev_gs, next_gs,
+                          trick_reward, prev_gs, next_gs,
                           next_legal0, next_legal2, done)
         buf.clear()
         prev_gs = next_gs
@@ -344,15 +300,9 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
         else:
             action = opp_agents[player_id].step(state)
 
-        raw_action = env._decode_action(action)
-
         # ── buffer team agent transitions ─────────────────────────────────────
         if player_id in (0, 2):
-            shaping = compute_shaping(
-                player_id, raw_action,
-                game.trump, game.lead_suit, len(game.center)
-            )
-            buf[player_id] = (state['obs'].copy(), action, shaping)
+            buf[player_id] = (state['obs'].copy(), action)
 
         prev_center_len = len(game.center)
         next_state, next_player_id = env.step(action)
@@ -370,8 +320,8 @@ def run_episode(env, qmix: QMIXSystem, opp_agents: dict,
             trick_r     = (new_tricks - prev_team_tricks) * 0.25
             prev_team_tricks = new_tricks
             flush(trick_r)
-        elif 0 in buf and 2 in buf:
-            # Both acted during bidding — flush with shaping-only reward
+        elif 0 in buf and 2 in buf and len(game.center) == 0:
+            # Both acted during bidding (center is always empty outside of tricks)
             flush(0.0)
 
         state     = next_state
@@ -422,7 +372,7 @@ if __name__ == '__main__':
 
     # ── create agents ─────────────────────────────────────────────────────────
     agent0 = DQNAgent(
-        scope='aggressive',
+        scope='agent0',
         action_num=ACTION_NUM,
         state_shape=[OBS_DIM],
         mlp_layers=[128, 128],
@@ -435,7 +385,7 @@ if __name__ == '__main__':
         learning_rate=LR,
     )
     agent2 = DQNAgent(
-        scope='timid',
+        scope='agent2',
         action_num=ACTION_NUM,
         state_shape=[OBS_DIM],
         mlp_layers=[128, 128],
@@ -459,8 +409,8 @@ if __name__ == '__main__':
     # ── training ──────────────────────────────────────────────────────────────
     print("=" * 60)
     print("QMIX Cooperative Euchre Training")
-    print("  Team QMIX : Player 0 (Aggressive) + Player 2 (Timid)")
-    print("  Team Rule : Player 1 (Rule)        + Player 3 (Rule)")
+    print("  Team QMIX : Player 0 + Player 2 (rule-based, QMIX)")
+    print("  Team Rule : Player 1 + Player 3 (fixed rule agents)")
     print(f"  Episodes  : {EPISODES}   Warmup: {WARMUP_EPISODES}")
     print("=" * 60)
     print(f"{'Episode':>8}  {'AvgLoss':>9}  {'WinRate':>8}  {'AvgPayoff':>10}")
@@ -495,48 +445,3 @@ if __name__ == '__main__':
     print(f"Final (1000 games):  win={win_rate*100:.1f}%  avg_payoff={avg_payoff:+.3f}")
 
     qmix.save(os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt'))
-
-    # ── personality summary ────────────────────────────────────────────────────
-    # Run 200 greedy games and tally personality metrics
-    agg_trump_leads = 0
-    tim_suit_follows = 0
-    trump_calls = {0: 0, 2: 0}
-    n_check = 200
-
-    for _ in range(n_check):
-        state, player_id = env.reset()
-        game = env.game
-        while not env.is_over():
-            if player_id == 0:
-                action, _ = qmix.agent0.eval_step(state)
-            elif player_id == 2:
-                action, _ = qmix.agent2.eval_step(state)
-            else:
-                action, _ = opp_agents[player_id].eval_step(state)
-
-            raw = env._decode_action(action)
-            trump = game.trump
-            lead  = game.lead_suit
-            clen  = len(game.center)
-            is_card = (raw not in ('pick','pass')
-                       and not raw.startswith('call-')
-                       and not raw.startswith('discard-'))
-
-            if player_id in (0, 2):
-                if raw == 'pick' or raw.startswith('call-'):
-                    trump_calls[player_id] += 1
-            if player_id == 0 and is_card and trump and clen == 0 and raw[0] == trump:
-                agg_trump_leads += 1
-            if (player_id == 2 and is_card and trump and lead
-                    and lead != trump and clen > 0 and raw[0] == lead):
-                tim_suit_follows += 1
-
-            state, player_id = env.step(action)
-
-    # each game has ~5 tricks; player acts once per trick
-    tricks_total = n_check * 5
-    print(f"\nPersonality metrics ({n_check} greedy games):")
-    print(f"  Aggressive (P0): trump leads   = {agg_trump_leads}/{tricks_total} "
-          f"({100*agg_trump_leads/tricks_total:.1f}%)  |  trump calls = {trump_calls[0]}/{n_check}")
-    print(f"  Timid      (P2): suit follows  = {tim_suit_follows}/{tricks_total} "
-          f"({100*tim_suit_follows/tricks_total:.1f}%)  |  trump calls = {trump_calls[2]}/{n_check}")
