@@ -1,14 +1,8 @@
 """
 Evaluate a saved QMIX checkpoint against random or rule-based opponents.
-
-Usage:
-    python run_euchre_vs_random.py                      # vs rule-based (default)
-    python run_euchre_vs_random.py --opponent random    # vs random
-    python run_euchre_vs_random.py --opponent rule      # vs rule-based
-    python run_euchre_vs_random.py --games 500          # number of evaluation hands
 """
 
-import sys, os, argparse
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import rlcard
@@ -17,14 +11,10 @@ from rlcard.agents.random_agent import RandomAgent
 from rlcard.agents.euchre_rule_agent import EuchreRuleAgent
 from train_qmix import QMIXSystem, OBS_DIM, ACTION_NUM, MIX_EMBED
 
-# ── CLI args ───────────────────────────────────────────────────────────────────
+# ── Configuration ──────────────────────────────────────────────────────────────
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--opponent', choices=['random', 'rule'], default='rule',
-                    help='Opponent type: random or rule-based (default: rule)')
-parser.add_argument('--games', type=int, default=1000,
-                    help='Number of hands to evaluate (default: 1000)')
-args = parser.parse_args()
+OPPONENT = 'rule'   # 'rule' or 'random'
+NUM_GAMES = 10000
 
 # ── Build agents ───────────────────────────────────────────────────────────────
 
@@ -46,7 +36,7 @@ qmix = QMIXSystem(agent0, agent2)
 ckpt_path = os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt')
 qmix.load(ckpt_path)
 
-if args.opponent == 'random':
+if OPPONENT == 'random':
     opp1 = RandomAgent(ACTION_NUM)
     opp3 = RandomAgent(ACTION_NUM)
     opp_label = 'Random'
@@ -61,7 +51,7 @@ env = rlcard.make('euchre', config={'num_players': 4})
 # Players 0 & 2 are the QMIX team; players 1 & 3 are opponents.
 env.set_agents([agent0, opp1, agent2, opp3])
 
-num_games   = args.games
+num_games   = NUM_GAMES
 wins        = 0
 total_payoff = {i: 0.0 for i in range(4)}
 
