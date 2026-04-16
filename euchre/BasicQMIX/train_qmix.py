@@ -35,21 +35,21 @@ ACTION_NUM   = 54
 GLOBAL_DIM   = 127    # from EuchreEnv.get_global_state()
 MIX_EMBED    = 64     # mixing network hidden size
 
-EPISODES          = 80_000
-BATCH_SIZE        = 32
-MEMORY_SIZE       = 50_000    # fills after ~10k episodes
-WARMUP_EPISODES   = 1_000     # ~1% of episodes before any gradients
+EPISODES          = 5_000_000
+BATCH_SIZE        = 64
+MEMORY_SIZE       = 500_000   # ~100k episodes of experience; good diversity at 5M scale
+WARMUP_EPISODES   = 50_000    # ~1% of training before any gradients
 TRAIN_EVERY       = 1
-TARGET_SYNC_EVERY = 2_000
-EVAL_EVERY        = 20_000    # 4 checkpoints total
-EVAL_GAMES        = 100
+TARGET_SYNC_EVERY = 10_000    # hard sync every 10k episodes (~100k gradient steps)
+EVAL_EVERY        = 100_000   # 50 checkpoints over full run
+EVAL_GAMES        = 500       # tighter win-rate estimates at each checkpoint
 
 GAMMA        = 0.99
 LR           = 5e-4
 EPSILON_START = 1.0
 EPSILON_END   = 0.05
-# Decay over all 80k episodes (~10 decisions/ep × 80k = 800k total_t steps)
-EPSILON_STEPS = 800_000
+# total_t ticks ~10x per episode; decay over first 30% of training ≈ 15M steps
+EPSILON_STEPS = 15_000_000
 
 
 # ── Mixing Network ─────────────────────────────────────────────────────────────
@@ -448,7 +448,7 @@ if __name__ == '__main__':
 
     # ── final evaluation ──────────────────────────────────────────────────────
     print("=" * 60)
-    win_rate, avg_payoff = evaluate(env, qmix, opp_agents, n_games=1000)
+    win_rate, avg_payoff = evaluate(env, qmix, opp_agents, n_games=2000)
     print(f"Final (1000 games):  win={win_rate*100:.1f}%  avg_payoff={avg_payoff:+.3f}")
 
     qmix.save(os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt'))
