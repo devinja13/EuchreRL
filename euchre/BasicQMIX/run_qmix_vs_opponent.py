@@ -13,8 +13,9 @@ from train_qmix import QMIXSystem, OBS_DIM, ACTION_NUM, MIX_EMBED
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-OPPONENT = 'rule'   # 'rule' or 'random'
-NUM_GAMES = 10000
+OPPONENT   = 'rule'   # 'rule' or 'random'
+NUM_GAMES  = 20
+SHOW_HANDS = True     # print score after every hand
 
 # ── Build agents ───────────────────────────────────────────────────────────────
 
@@ -68,6 +69,10 @@ for game_idx in range(num_games):
     opp_score  = 0
     hands_this_game = 0
 
+    print(f"\nGame {game_idx + 1}  (QMIX vs {opp_label})")
+    print(f"  {'Hand':<6} {'Winner':<22} {'Pts':<5} QMIX {qmix_score:>2} — {opp_score:<2} OPP")
+    print(f"  {'-'*52}")
+
     while qmix_score < WIN_TARGET and opp_score < WIN_TARGET:
         state, player_id = env.reset()
 
@@ -83,25 +88,31 @@ for game_idx in range(num_games):
             state, player_id = env.step(action)
 
         payoffs = env.game.get_payoffs()
-        qmix_hand = payoffs.get(0, 0)   # player 0's payoff represents the QMIX team
+        qmix_hand = payoffs.get(0, 0)
 
         if qmix_hand > 0:
-            qmix_score += qmix_hand      # +1 normal win, +2 march
+            qmix_score += qmix_hand
+            pts     = qmix_hand
+            winner  = 'QMIX' + (' (march!)' if qmix_hand == 2 else '')
+            score_str = f"QMIX {qmix_score:>2} — {opp_score:<2} OPP"
         else:
-            opp_score  += abs(qmix_hand) # opponent scored 1 or 2
+            opp_score += abs(qmix_hand)
+            pts     = abs(qmix_hand)
+            winner  = 'OPP ' + (' (march!)' if abs(qmix_hand) == 2 else '')
+            score_str = f"QMIX {qmix_score:>2} — {opp_score:<2} OPP"
 
         hands_this_game += 1
+        if SHOW_HANDS:
+            print(f"  Hand {hands_this_game:<3}  {winner:<22} +{pts}    {score_str}")
+
+    winner_label = 'QMIX' if qmix_score >= WIN_TARGET else 'OPP'
+    print(f"  {'-'*52}")
+    print(f"  >> {winner_label} wins game {game_idx + 1} "
+          f"({qmix_score}–{opp_score}) in {hands_this_game} hands")
 
     if qmix_score >= WIN_TARGET:
         qmix_match_wins += 1
-
     total_hands += hands_this_game
-
-    if (game_idx + 1) % 10 == 0:
-        win_pct = 100 * qmix_match_wins / (game_idx + 1)
-        avg_hands = total_hands / (game_idx + 1)
-        print(f"  Game {game_idx + 1:>5}: QMIX match win rate {win_pct:.1f}%  "
-              f"avg hands/game {avg_hands:.1f}")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 
