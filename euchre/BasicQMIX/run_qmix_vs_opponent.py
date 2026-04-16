@@ -46,53 +46,70 @@ else:
     opp_label = 'Rule-based'
 
 # ── Evaluation loop ────────────────────────────────────────────────────────────
+# Each "game" is a race to WIN_TARGET points.
+# Winning a hand scores +1 (normal win) or +2 (march); losses score 0.
+# First team to WIN_TARGET points wins the game.
+
+WIN_TARGET = 10
 
 env = rlcard.make('euchre', config={'num_players': 4})
-# Players 0 & 2 are the QMIX team; players 1 & 3 are opponents.
 env.set_agents([agent0, opp1, agent2, opp3])
 
-num_games   = NUM_GAMES
-wins        = 0
-total_payoff = {i: 0.0 for i in range(4)}
+num_games      = NUM_GAMES
+qmix_match_wins = 0
+total_hands    = 0
 
-print(f"Evaluating QMIX (players 0 & 2) vs {opp_label} (players 1 & 3) "
-      f"over {num_games} hands...")
+print(f"Evaluating QMIX (players 0 & 2) vs {opp_label} (players 1 & 3)")
+print(f"  {num_games} games, first to {WIN_TARGET} points wins each game")
 print("-" * 60)
 
 for game_idx in range(num_games):
-    state, player_id = env.reset()
+    qmix_score = 0
+    opp_score  = 0
+    hands_this_game = 0
 
-    while not env.is_over():
-        if player_id == 0:
-            action, _ = qmix.agent0.eval_step(state)
-        elif player_id == 2:
-            action, _ = qmix.agent2.eval_step(state)
+    while qmix_score < WIN_TARGET and opp_score < WIN_TARGET:
+        state, player_id = env.reset()
+
+        while not env.is_over():
+            if player_id == 0:
+                action, _ = qmix.agent0.eval_step(state)
+            elif player_id == 2:
+                action, _ = qmix.agent2.eval_step(state)
+            elif player_id == 1:
+                action, _ = opp1.eval_step(state)
+            else:
+                action, _ = opp3.eval_step(state)
+            state, player_id = env.step(action)
+
+        payoffs = env.game.get_payoffs()
+        qmix_hand = payoffs.get(0, 0)   # player 0's payoff represents the QMIX team
+
+        if qmix_hand > 0:
+            qmix_score += qmix_hand      # +1 normal win, +2 march
         else:
-            action, _ = opp1.eval_step(state) if player_id == 1 else opp3.eval_step(state)
-        state, player_id = env.step(action)
+            opp_score  += abs(qmix_hand) # opponent scored 1 or 2
 
-    payoffs = env.game.get_payoffs()
-    for p, score in payoffs.items():
-        total_payoff[p] += score
+        hands_this_game += 1
 
-    qmix_payoff = payoffs.get(0, 0)
-    if qmix_payoff > 0:
-        wins += 1
+    if qmix_score >= WIN_TARGET:
+        qmix_match_wins += 1
 
-    if (game_idx + 1) % 100 == 0:
-        win_pct = 100 * wins / (game_idx + 1)
-        avg_pay = total_payoff[0] / (game_idx + 1)
-        print(f"  Hand {game_idx + 1:>5}: win rate {win_pct:.1f}%  avg payoff {avg_pay:+.3f}")
+    total_hands += hands_this_game
+
+    if (game_idx + 1) % 10 == 0:
+        win_pct = 100 * qmix_match_wins / (game_idx + 1)
+        avg_hands = total_hands / (game_idx + 1)
+        print(f"  Game {game_idx + 1:>5}: QMIX match win rate {win_pct:.1f}%  "
+              f"avg hands/game {avg_hands:.1f}")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 print("=" * 60)
-print(f"Results over {num_games} hands  (opponent: {opp_label})")
+print(f"Results over {num_games} games to {WIN_TARGET} pts  (opponent: {opp_label})")
 print(f"  QMIX team   (players 0 & 2): "
-      f"wins={wins}/{num_games} ({100*wins/num_games:.1f}%)  "
-      f"total payoff={total_payoff[0]+total_payoff[2]:+.1f}")
+      f"{qmix_match_wins}/{num_games} ({100*qmix_match_wins/num_games:.1f}%)")
 print(f"  Opponent    (players 1 & 3): "
-      f"wins={num_games-wins}/{num_games} ({100*(num_games-wins)/num_games:.1f}%)  "
-      f"total payoff={total_payoff[1]+total_payoff[3]:+.1f}")
-print(f"  Avg payoff per hand (QMIX team player 0): "
-      f"{total_payoff[0]/num_games:+.3f}")
+      f"{num_games - qmix_match_wins}/{num_games} "
+      f"({100*(num_games - qmix_match_wins)/num_games:.1f}%)")
+print(f"  Avg hands per game: {total_hands/num_games:.1f}")
