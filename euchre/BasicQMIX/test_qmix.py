@@ -10,7 +10,7 @@ import torch
 from rlcard.agents.dqn_agent_pytorch import DQNAgent, JointMemory
 from rlcard.agents.random_agent import RandomAgent
 from rlcard.agents.qmix_mixer import QMIXMixer
-from qmix_trainer import QMIXTrainer, QMIXAgent
+from BasicQMIX.qmix_trainer import QMIXTrainer, QMIXAgent
 
 # ---------------------------------------------------------------------------
 # Shared helpers
