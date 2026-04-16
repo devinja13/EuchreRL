@@ -28,7 +28,7 @@ SOFTWARE.
 import numpy as np
 import torch
 import torch.nn as nn
-from collections import namedtuple
+from collections import namedtuple, deque
 from copy import deepcopy
 
 from rlcard.utils.utils import remove_illegal
@@ -74,15 +74,13 @@ class JointMemory(object):
     def __init__(self, memory_size, batch_size):
         self.memory_size = memory_size
         self.batch_size = batch_size
-        self.memory = []
+        self.memory = deque(maxlen=memory_size)
 
     def save(self, obs1, obs2, action1, action2,
              next_obs1, next_obs2, reward,
              global_state, next_global_state,
              next_legal1=None, next_legal2=None,
              done=False):
-        if len(self.memory) == self.memory_size:
-            self.memory.pop(0)
         self.memory.append(JointTransition(
             obs1, obs2, action1, action2,
             next_obs1, next_obs2, reward,
