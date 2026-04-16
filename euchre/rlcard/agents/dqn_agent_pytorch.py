@@ -41,17 +41,31 @@ class Memory(object):
         self.batch_size = batch_size
         self.memory = []
 
-    def save(self, state, action, reward, next_state, done):
+    def save(self, state, action, reward, next_state, next_legal_actions, done):
         if len(self.memory) == self.memory_size:
             self.memory.pop(0)
-        self.memory.append(Transition(state, action, reward, next_state, done))
+        self.memory.append(Transition(state, action, reward, next_state, tuple(next_legal_actions), done))
 
     def sample(self):
         import random
         samples = random.sample(self.memory, self.batch_size)
-        return map(np.array, zip(*samples))
+        state, action, reward, next_state, next_legal_actions, done = zip(*samples)
+        return (
+            np.array(state),
+            np.array(action),
+            np.array(reward),
+            np.array(next_state),
+            list(next_legal_actions),
+            np.array(done),
+        )
 
-Transition = namedtuple('Transition', ['state', 'action', 'reward', 'next_state', 'done'])
+    def clear(self):
+        self.memory.clear()
+
+    def __len__(self):
+        return len(self.memory)
+
+Transition = namedtuple('Transition', ['state', 'action', 'reward', 'next_state', 'next_legal_actions', 'done'])
 
 JointTransition = namedtuple('JointTransition', [
     'obs1', 'obs2',                          # per-agent local observations (48-dim each)
@@ -196,10 +210,24 @@ class DQNAgent(object):
             ts (list): a list of 5 elements that represent the transition
         '''
         (state, action, reward, next_state, done) = tuple(ts)
-        self.feed_memory(state['obs'], action, reward, next_state['obs'], done)
+        self.feed_memory(
+            state['obs'],
+            action,
+            reward,
+            next_state['obs'],
+            next_state['legal_actions'],
+            done,
+        )
         self.total_t += 1
-        tmp = self.total_t - self.replay_memory_init_size
-        if tmp>=0 and tmp%self.train_every == 0:
+
+        # Training should depend on the current replay contents, not just
+        # lifetime timesteps. This matters when a caller intentionally clears
+        # replay between phases against a new frozen teammate policy.
+        min_buffer = max(self.replay_memory_init_size, self.batch_size)
+        if len(self.memory) < min_buffer:
+            return
+
+        if self.total_t % self.train_every == 0:
             self.train()
 
     def step(self, state):
@@ -227,6 +255,7 @@ class DQNAgent(object):
             action (int): an action id
         '''
         q_values = self.q_estimator.predict_nograd(np.expand_dims(state['obs'], 0))[0]
+        q_values = np.nan_to_num(q_values, nan=0.0, posinf=1e6, neginf=-1e6)
         probs = remove_illegal(np.exp(q_values), state['legal_actions'])
         best_action = np.argmax(probs)
         return best_action, probs
@@ -244,6 +273,7 @@ class DQNAgent(object):
         epsilon = self.epsilons[min(self.total_t, self.epsilon_decay_steps-1)]
         A = np.ones(self.action_num, dtype=float) * epsilon / self.action_num
         q_values = self.q_estimator.predict_nograd(np.expand_dims(state, 0))[0]
+        q_values = np.nan_to_num(q_values, nan=0.0, posinf=1e6, neginf=-1e6)
         best_action = np.argmax(q_values)
         A[best_action] += (1.0 - epsilon)
         return A
@@ -254,16 +284,28 @@ class DQNAgent(object):
         Returns:
             loss (float): The loss of the current batch.
         '''
-        state_batch, action_batch, reward_batch, next_state_batch, done_batch = self.memory.sample()
+        state_batch, action_batch, reward_batch, next_state_batch, next_legal_actions_batch, done_batch = self.memory.sample()
 
         # Calculate best next actions using Q-network (Double DQN)
         q_values_next = self.q_estimator.predict_nograd(next_state_batch)
-        best_actions = np.argmax(q_values_next, axis=1)
+        masked_q_values_next = np.full_like(q_values_next, -1e9)
+        for idx, legal_actions in enumerate(next_legal_actions_batch):
+            if legal_actions:
+                masked_q_values_next[idx, list(legal_actions)] = q_values_next[idx, list(legal_actions)]
+        best_actions = np.argmax(masked_q_values_next, axis=1)
 
         # Evaluate best next actions using Target-network (Double DQN)
         q_values_next_target = self.target_estimator.predict_nograd(next_state_batch)
-        target_batch = reward_batch + np.invert(done_batch).astype(np.float32) * \
-            self.discount_factor * q_values_next_target[np.arange(self.batch_size), best_actions]
+        masked_q_values_next_target = np.full_like(q_values_next_target, -1e9)
+        for idx, legal_actions in enumerate(next_legal_actions_batch):
+            if legal_actions:
+                masked_q_values_next_target[idx, list(legal_actions)] = q_values_next_target[idx, list(legal_actions)]
+
+        target_batch = reward_batch.astype(np.float32).copy()
+        non_terminal = np.invert(done_batch).astype(bool)
+        if np.any(non_terminal):
+            next_values = masked_q_values_next_target[np.arange(self.batch_size), best_actions]
+            target_batch[non_terminal] += self.discount_factor * next_values[non_terminal]
 
         # Perform gradient descent update
         state_batch = np.array(state_batch)
@@ -280,7 +322,7 @@ class DQNAgent(object):
 
         self.train_t += 1
 
-    def feed_memory(self, state, action, reward, next_state, done):
+    def feed_memory(self, state, action, reward, next_state, next_legal_actions, done):
         ''' Feed transition to memory
 
         Args:
@@ -288,9 +330,10 @@ class DQNAgent(object):
             action (int): the performed action ID
             reward (float): the reward received
             next_state (numpy.array): the next state after performing the action
+            next_legal_actions (list): legal action ids in the next state
             done (boolean): whether the episode is finished
         '''
-        self.memory.save(state, action, reward, next_state, done)
+        self.memory.save(state, action, reward, next_state, next_legal_actions, done)
 
     def get_state_dict(self):
         ''' Get the state dict to save models
