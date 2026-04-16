@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import numpy as np
 import torch
+import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
 from copy import deepcopy
@@ -417,6 +418,9 @@ if __name__ == '__main__':
     print("-" * 44)
 
     recent_losses = []
+    eval_episodes = []
+    eval_win_rates = []
+    eval_avg_payoffs = []
 
     for ep in range(1, EPISODES + 1):
         run_episode(env, qmix, opp_agents, joint_memory)
@@ -438,6 +442,9 @@ if __name__ == '__main__':
             eps0 = qmix.agent0.epsilons[min(qmix.agent0.total_t, EPSILON_STEPS - 1)]
             print(f"{ep:>8}  {avg_loss:>9.4f}  {win_rate*100:>7.1f}%  {avg_payoff:>+10.3f}"
                   f"   ε={eps0:.3f}")
+            eval_episodes.append(ep)
+            eval_win_rates.append(win_rate * 100)
+            eval_avg_payoffs.append(avg_payoff)
 
     # ── final evaluation ──────────────────────────────────────────────────────
     print("=" * 60)
@@ -445,3 +452,26 @@ if __name__ == '__main__':
     print(f"Final (1000 games):  win={win_rate*100:.1f}%  avg_payoff={avg_payoff:+.3f}")
 
     qmix.save(os.path.join(os.path.dirname(__file__), 'qmix_euchre.pt'))
+
+    # ── plot learning curves ──────────────────────────────────────────────────
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    ax1.plot(eval_episodes, eval_win_rates, marker='o', linewidth=2, color='steelblue')
+    ax1.axhline(50, color='gray', linestyle='--', linewidth=1, label='50% baseline')
+    ax1.set_ylabel('Win Rate (%)')
+    ax1.set_title('QMIX vs Rule Agents — Learning Curves')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(eval_episodes, eval_avg_payoffs, marker='o', linewidth=2, color='darkorange')
+    ax2.axhline(0, color='gray', linestyle='--', linewidth=1, label='break-even')
+    ax2.set_ylabel('Avg Payoff')
+    ax2.set_xlabel('Episode')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plot_path = os.path.join(os.path.dirname(__file__), 'qmix_learning_curve.png')
+    plt.savefig(plot_path, dpi=150)
+    print(f"Learning curve saved to {plot_path}")
+    plt.show()
