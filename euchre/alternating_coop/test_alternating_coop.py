@@ -1,10 +1,6 @@
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-
 import unittest
 
-from train_alternating_coop import (
+from euchre.alternating_coop import (
     AUGMENTED_OBS_DIM,
     AlternatingCooperativeTrainer,
     AlternatingTrainingConfig,

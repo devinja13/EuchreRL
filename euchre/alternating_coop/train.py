@@ -8,8 +8,7 @@ plain alternating DQN:
    compact game-context features.
 2. A truly frozen teammate snapshot for each phase, so the active learner sees
    a stationary partner policy during that phase.
-3. Random legal-action opponents to simplify the training benchmark and avoid
-   overfitting to one narrow adversary style.
+3. Fixed rule-based opponents so the benchmark stays consistent across phases.
 4. Automatic tracking of the best joint checkpoint by evaluation win rate.
 """
 
@@ -25,10 +24,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import rlcard
-from rlcard.agents.dqn_agent_pytorch import DQNAgent
-from rlcard.agents.euchre_rule_agent import EuchreRuleAgent
-from rlcard.agents.random_agent import RandomAgent
+from euchre import rlcard
+from euchre.rlcard.agents.dqn_agent_pytorch import DQNAgent
+from euchre.rlcard.agents.euchre_rule_agent import EuchreRuleAgent
+from euchre.rlcard.agents.random_agent import RandomAgent
 
 
 BASE_OBS_DIM = 48
@@ -84,6 +83,7 @@ class AlternatingCooperativeTrainer:
             0: self._make_learning_agent('coop_p0'),
             2: self._make_learning_agent('coop_p2'),
         }
+        self.rule_opponents = {1: EuchreRuleAgent(), 3: EuchreRuleAgent()}
         self.random_opponents = {1: RandomAgent(ACTION_NUM), 3: RandomAgent(ACTION_NUM)}
         self.phase_history: List[Dict[str, float]] = []
         self.best_result: Dict[str, float] | None = None
@@ -175,7 +175,7 @@ class AlternatingCooperativeTrainer:
         frozen_teammate=None,
         opp_agents: Dict[int, object] | None = None,
     ) -> int:
-        opp_agents = opp_agents or self.random_opponents
+        opp_agents = opp_agents or self.rule_opponents
 
         if player_id in opp_agents:
             action, _ = opp_agents[player_id].eval_step(raw_state)
@@ -261,7 +261,7 @@ class AlternatingCooperativeTrainer:
         print("=" * 72)
         print("Alternating Cooperative Euchre Training")
         print("  Team learner : players 0 and 2")
-        print("  Opponents    : random legal-action players 1 and 3")
+        print("  Opponents    : rule-based players 1 and 3")
         print(f"  Obs dim      : {AUGMENTED_OBS_DIM} (base {BASE_OBS_DIM} + context {EXTRA_OBS_DIM})")
         print(f"  Rule init    : {self.config.rule_init_hands} imitation hands")
         print(f"  Phase hands  : {self.config.phase_episodes}")
@@ -381,7 +381,7 @@ class AlternatingCooperativeTrainer:
 
         payoffs = []
         for _ in range(num_episodes):
-            payoffs.append(self.play_training_episode(train_player, frozen_teammate, self.random_opponents))
+            payoffs.append(self.play_training_episode(train_player, frozen_teammate, self.rule_opponents))
 
         win_rate, avg_payoff = self.evaluate_joint_policy(self.config.eval_games)
         win_count = int(round(win_rate * self.config.eval_games))
@@ -417,7 +417,7 @@ class AlternatingCooperativeTrainer:
                     raw_state,
                     train_player=None,
                     frozen_teammate=None,
-                    opp_agents=self.random_opponents,
+                    opp_agents=self.rule_opponents,
                 )
                 raw_state, player_id = self.env.step(action)
 
